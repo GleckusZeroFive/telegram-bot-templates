@@ -3,7 +3,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.db.models import Document
 
 
-
 def get_documents_keyboard(docs: list[Document]) -> InlineKeyboardMarkup:
     """Inline-кнопки с документами для выбора при удалении."""
     buttons = [

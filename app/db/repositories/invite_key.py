@@ -1,8 +1,7 @@
-import random
-import string
-from datetime import datetime, timezone
+import secrets
+from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import InviteKey
@@ -12,9 +11,18 @@ _ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 
 def generate_key() -> str:
-    """Генерация ключа формата XXXX-XXXX-XXXX."""
-    chars = "".join(random.choices(_ALPHABET, k=12))
+    """Генерация ключа формата XXXX-XXXX-XXXX.
+
+    Ключ даёт платный или admin-тариф, поэтому источник случайности —
+    криптографический (secrets), а не предсказуемый random.
+    """
+    chars = "".join(secrets.choice(_ALPHABET) for _ in range(12))
     return f"{chars[:4]}-{chars[4:8]}-{chars[8:12]}"
+
+
+def mask_key(key: str) -> str:
+    """Ключ для логов: первая группа видна, остальное скрыто."""
+    return key[:4] + "-****-****"
 
 
 class InviteKeyRepository:
@@ -38,10 +46,27 @@ class InviteKeyRepository:
         )
         return result.scalar_one_or_none()
 
-    async def mark_used(self, invite_key: InviteKey, user_id: int) -> None:
-        invite_key.used_by_id = user_id
-        invite_key.used_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await self.session.commit()
+    async def claim(self, key: str, user_id: int) -> str | None:
+        """Атомарно занять ключ за пользователем.
+
+        Проверка «не использован» и запись владельца — один UPDATE, поэтому один
+        ключ не активируют двое, прислав его одновременно. Транзакцию не
+        фиксирует: вызывающий коммитит её вместе со сменой тарифа.
+
+        Returns:
+            Тариф ключа, если ключ был свободен и теперь занят; иначе None.
+        """
+        result = await self.session.execute(
+            update(InviteKey)
+            .where(InviteKey.key == key, InviteKey.used_by_id.is_(None))
+            .values(
+                used_by_id=user_id,
+                used_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+            .returning(InviteKey.tier)
+            .execution_options(synchronize_session=False)
+        )
+        return result.scalar_one_or_none()
 
     async def get_by_creator(self, user_id: int) -> list[InviteKey]:
         result = await self.session.execute(

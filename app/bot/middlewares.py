@@ -1,9 +1,10 @@
 import logging
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject, Update
+from aiogram.types import TelegramObject
 
 from app.db.database import db
 from app.db.repositories.user import UserRepository
@@ -38,7 +39,7 @@ class AuthMiddleware(BaseMiddleware):
                 if (
                     user.tier != "free"
                     and user.tier_expires_at is not None
-                    and user.tier_expires_at < datetime.now(timezone.utc).replace(tzinfo=None)
+                    and user.tier_expires_at < datetime.now(UTC).replace(tzinfo=None)
                 ):
                     logger.info("Тариф %s истёк у пользователя %s", user.tier, user.telegram_id)
                     await user_repo.revert_to_free(user.id)

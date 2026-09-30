@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import TIER_LIMITS, settings
 from app.db.models import User
-from app.db.repositories.invite_key import InviteKeyRepository
+from app.db.repositories.invite_key import InviteKeyRepository, mask_key
 from app.db.repositories.user import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ async def cmd_genkey(
     )
     logger.info(
         "Ключ %s (%s) создан пользователем %s",
-        invite_key.key, tier, user.telegram_id,
+        mask_key(invite_key.key), tier, user.telegram_id,
     )
 
 
@@ -71,23 +71,20 @@ async def cmd_activate(
         return
 
     key_repo = InviteKeyRepository(session)
-    invite_key = await key_repo.get_by_key(key_str)
+    new_tier = await key_repo.claim(key_str, user.id)
 
-    if not invite_key:
-        await message.answer("Ключ не найден.")
+    if new_tier is None:
+        existing = await key_repo.get_by_key(key_str)
+        if existing is None:
+            await message.answer("Ключ не найден.")
+        else:
+            await message.answer("Этот ключ уже использован.")
         return
 
-    if invite_key.used_by_id is not None:
-        await message.answer("Этот ключ уже использован.")
-        return
-
-    # Активируем ключ
-    new_tier = invite_key.tier
-    expires_at = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=settings.tier_duration_days)
-
+    # Смена тарифа коммитится вместе с занятием ключа — одной транзакцией
+    expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(days=settings.tier_duration_days)
     user_repo = UserRepository(session)
     await user_repo.update_tier(user.id, new_tier, expires_at)
-    await key_repo.mark_used(invite_key, user.id)
 
     tier_name = _TIER_NAMES.get(new_tier, new_tier)
     expires_str = expires_at.strftime("%d.%m.%Y")
@@ -101,5 +98,5 @@ async def cmd_activate(
     )
     logger.info(
         "Ключ %s активирован пользователем %s → тариф %s до %s",
-        invite_key.key, user.telegram_id, new_tier, expires_str,
+        mask_key(key_str), user.telegram_id, new_tier, expires_str,
     )

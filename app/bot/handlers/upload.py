@@ -6,12 +6,12 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.filters import SUPPORTED_EXTENSIONS
+from app.bot.formatting import esc
 from app.config import settings
 from app.core.embedder import EmbeddingServiceError
 from app.core.rag_pipeline import get_pipeline
 from app.db.models import User
 from app.db.repositories.document import DocumentRepository
-from app.llm.provider import LLMError
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -32,7 +32,7 @@ async def handle_document_upload(
     if ext not in SUPPORTED_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
         await message.answer(
-            f"Неподдерживаемый формат файла: <b>.{ext}</b>\n"
+            f"Неподдерживаемый формат файла: <b>.{esc(ext)}</b>\n"
             f"Поддерживаются: {supported}"
         )
         return
@@ -66,6 +66,7 @@ async def handle_document_upload(
     file_path = upload_dir / f"{user.telegram_id}_{safe_name}"
 
     doc_record = None
+    indexed = False
     try:
         await bot.download(document, destination=file_path)
 
@@ -109,12 +110,13 @@ async def handle_document_upload(
             return
 
         await doc_repo.update_status(doc_record.id, "ready", chunk_count=chunk_count)
+        indexed = True
         # Сохраняем полный текст для diff при будущих обновлениях
         if full_text:
             await doc_repo.update_full_text(doc_record.id, full_text)
 
         await status_msg.edit_text(
-            f"Документ <b>{filename}</b> загружен и проиндексирован.\n"
+            f"Документ <b>{esc(filename)}</b> загружен и проиндексирован.\n"
             f"Создано фрагментов: {chunk_count}\n\n"
             "Теперь вы можете задавать вопросы по этому документу."
         )
@@ -132,7 +134,9 @@ async def handle_document_upload(
         )
     except Exception as e:
         logger.exception("Ошибка обработки документа %s", filename)
-        if doc_record:
+        # Сбой после индексации (например, при отправке уведомления) не делает
+        # документ битым — он уже доступен для поиска
+        if doc_record and not indexed:
             await doc_repo.update_status(
                 doc_record.id, "error", error_message=str(e)
             )

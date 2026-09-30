@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,7 +114,7 @@ class DocumentRepository:
         )
         doc = result.scalar_one()
         doc.version += 1
-        doc.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        doc.updated_at = datetime.now(UTC).replace(tzinfo=None)
         await self.session.commit()
 
     async def get_by_user_non_backup(self, user_id: int) -> list[Document]:

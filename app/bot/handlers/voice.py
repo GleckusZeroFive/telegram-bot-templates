@@ -4,7 +4,8 @@ from aiogram import Bot, F, Router
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bot.handlers.query import route_and_process
+from app.bot.formatting import esc
+from app.bot.handlers.query import answer_with_quota
 from app.config import settings
 from app.core.embedder import EmbeddingServiceError
 from app.core.transcriber import TranscriptionError, transcribe
@@ -69,30 +70,25 @@ async def handle_voice(
             )
             return
 
+        recognized = f"Распознано: <i>{esc(text)}</i>"
+
         # Детекция команд
         command = _detect_command(text)
         if command:
             await status_msg.edit_text(
-                f"Распознано: <i>{text}</i>\n\n"
-                f"Похоже, вы хотите выполнить <b>{command}</b>.\n"
+                f"{recognized}\n\n"
+                f"Похоже, вы хотите выполнить <b>{esc(command)}</b>.\n"
                 "Отправьте команду текстом для подтверждения."
             )
             return
 
         # Показываем распознанный текст
-        await status_msg.edit_text(f"Распознано: <i>{text}</i>")
+        await status_msg.edit_text(recognized)
 
-        # Проверка лимита запросов
-        if user.queries_today >= user.queries_limit:
-            await status_msg.edit_text(
-                f"Распознано: <i>{text}</i>\n\n"
-                f"Достигнут дневной лимит запросов ({user.queries_limit}).\n"
-                "Попробуйте завтра.",
-            )
-            return
-
-        # Единая маршрутизация (chat by default, RAG when needed)
-        await route_and_process(text, status_msg, user, session)
+        # Лимит запросов + единая маршрутизация (chat by default, RAG when needed)
+        await answer_with_quota(
+            text, status_msg, user, session, limit_prefix=f"{recognized}\n\n",
+        )
 
     except TranscriptionError as e:
         logger.warning("Ошибка транскрипции: %s", e)

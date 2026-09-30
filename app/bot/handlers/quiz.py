@@ -8,6 +8,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.formatting import esc
 from app.core.rag_pipeline import get_pipeline
 from app.db.models import User
 from app.db.repositories.document import DocumentRepository
@@ -101,11 +102,11 @@ async def _get_random_chunks(user_telegram_id: int, count: int = 5) -> list[dict
     collection_name = f"user_{user_telegram_id}"
 
     try:
-        collections = [c.name for c in client.get_collections().collections]
-        if collection_name not in collections:
+        # Синхронный клиент Qdrant — вызовы уводим из event loop
+        if not await asyncio.to_thread(client.collection_exists, collection_name):
             return []
 
-        info = client.get_collection(collection_name)
+        info = await asyncio.to_thread(client.get_collection, collection_name)
         total = info.points_count
         if total == 0:
             return []
@@ -193,11 +194,11 @@ async def _send_question(
     q_num = state["total"]
     text = (
         f"<b>Вопрос {q_num}:</b>\n\n"
-        f"{quiz_data['question']}\n\n"
-        f"А) {quiz_data['options']['А']}\n"
-        f"Б) {quiz_data['options']['Б']}\n"
-        f"В) {quiz_data['options']['В']}\n"
-        f"Г) {quiz_data['options']['Г']}"
+        f"{esc(quiz_data['question'])}\n\n"
+        f"А) {esc(quiz_data['options']['А'])}\n"
+        f"Б) {esc(quiz_data['options']['Б'])}\n"
+        f"В) {esc(quiz_data['options']['В'])}\n"
+        f"Г) {esc(quiz_data['options']['Г'])}"
     )
 
     await status_msg.edit_text(text, reply_markup=_build_question_keyboard(), parse_mode="HTML")
@@ -260,12 +261,12 @@ async def handle_quiz_callback(callback: CallbackQuery, user: User) -> None:
 
         if chosen_ru == correct_ru:
             state["score"] += 1
-            result_text = f"Правильно!\n\nОтвет: {correct_ru}) {current['options'][correct_ru]}"
+            result_text = f"Правильно!\n\nОтвет: {correct_ru}) {esc(current['options'][correct_ru])}"
         else:
             result_text = (
                 f"Неправильно.\n\n"
-                f"Ваш ответ: {chosen_ru}) {current['options'][chosen_ru]}\n"
-                f"Правильный ответ: {correct_ru}) {current['options'][correct_ru]}"
+                f"Ваш ответ: {chosen_ru}) {esc(current['options'][chosen_ru])}\n"
+                f"Правильный ответ: {correct_ru}) {esc(current['options'][correct_ru])}"
             )
 
         score_text = f"\n\nСчёт: {state['score']}/{state['total']}"

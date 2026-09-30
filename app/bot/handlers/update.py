@@ -1,6 +1,7 @@
 """Обработчик /update — обновление документов (замена и дополнение)."""
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from datetime import datetime
@@ -12,6 +13,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.filters import SUPPORTED_EXTENSIONS
+from app.bot.formatting import esc, llm_to_html
 from app.bot.keyboards import (
     get_append_content_type_keyboard,
     get_append_image_mode_keyboard,
@@ -23,7 +26,6 @@ from app.bot.keyboards import (
     get_update_mode_keyboard,
 )
 from app.bot.states import UpdateDocumentFSM
-from app.bot.filters import SUPPORTED_EXTENSIONS
 from app.config import settings
 from app.core.embedder import EmbeddingServiceError
 from app.core.rag_pipeline import get_pipeline
@@ -84,7 +86,7 @@ async def cb_update_select(
     await state.update_data(doc_id=doc_id_str, doc_filename=doc.filename)
 
     await callback.message.edit_text(
-        f"Документ: <b>{doc.filename}</b> (v{doc.version}, {doc.chunk_count} фрагментов)\n\n"
+        f"Документ: <b>{esc(doc.filename)}</b> (v{doc.version}, {doc.chunk_count} фрагментов)\n\n"
         "Что вы хотите сделать?",
         reply_markup=get_update_mode_keyboard(),
     )
@@ -153,7 +155,7 @@ async def cb_replace_backup(
 
         await state.update_data(proposed_backup_name=proposed)
         await callback.message.edit_text(
-            f"Имя бэкапа: <b>{proposed}</b>",
+            f"Имя бэкапа: <b>{esc(proposed)}</b>",
             reply_markup=get_backup_name_keyboard(proposed),
         )
         await state.set_state(UpdateDocumentFSM.replace_backup_name)
@@ -209,7 +211,7 @@ async def handle_replace_upload(
     # Валидация
     if ext not in SUPPORTED_EXTENSIONS:
         supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
-        await message.answer(f"Неподдерживаемый формат: <b>.{ext}</b>\nПоддерживаются: {supported}")
+        await message.answer(f"Неподдерживаемый формат: <b>.{esc(ext)}</b>\nПоддерживаются: {supported}")
         return
 
     file_size = document.file_size or 0
@@ -291,7 +293,7 @@ async def cb_replace_diff_choice(
                 doc.full_text or "", data.get("new_text", "")
             )
             await callback.message.edit_text(
-                f"<b>Изменения:</b>\n\n{diff_summary}\n\nПрименить замену?",
+                f"<b>Изменения:</b>\n\n{llm_to_html(diff_summary)}\n\nПрименить замену?",
                 reply_markup=get_confirm_keyboard("update_replace"),
             )
         except (LLMError, Exception):
@@ -360,12 +362,11 @@ async def _execute_replace(
         await message.edit_text("Индексирую новый документ...")
 
         async def _on_progress(batch_num: int, total_batches: int) -> None:
-            try:
+            # Прогресс необязателен: сбой обновления не должен прерывать индексацию
+            with contextlib.suppress(Exception):
                 await message.edit_text(
                     f"Индексирую новый документ... ({batch_num}/{total_batches})"
                 )
-            except Exception:
-                pass
 
         chunk_count, full_text = await pipeline.replace_document(
             file_path=file_path,
@@ -383,10 +384,10 @@ async def _execute_replace(
 
         backup_msg = ""
         if data.get("want_backup"):
-            backup_msg = f"\nБэкап: <b>{data['backup_name']}</b>"
+            backup_msg = f"\nБэкап: <b>{esc(data['backup_name'])}</b>"
 
         await message.edit_text(
-            f"Документ <b>{doc.filename}</b> обновлён (v{doc.version + 1}).\n"
+            f"Документ <b>{esc(doc.filename)}</b> обновлён (v{doc.version + 1}).\n"
             f"Фрагментов: {chunk_count}{backup_msg}"
         )
 
@@ -461,7 +462,7 @@ async def handle_append_text(message: Message, state: FSMContext) -> None:
     # Показать превью
     preview = text[:500] + ("..." if len(text) > 500 else "")
     await message.answer(
-        f"<b>Текст для добавления:</b>\n\n{preview}\n\n"
+        f"<b>Текст для добавления:</b>\n\n{esc(preview)}\n\n"
         "Создать бэкап перед добавлением?",
         reply_markup=get_backup_ask_keyboard(),
     )
@@ -504,7 +505,7 @@ async def handle_append_image(
 
         preview = text[:500] + ("..." if len(text) > 500 else "")
         await status_msg.edit_text(
-            f"<b>Извлечённый текст:</b>\n\n{preview}\n\n"
+            f"<b>Извлечённый текст:</b>\n\n{esc(preview)}\n\n"
             "Создать бэкап перед добавлением?",
             reply_markup=get_backup_ask_keyboard(),
         )
@@ -512,7 +513,10 @@ async def handle_append_image(
 
     except LLMError as e:
         logger.warning("Vision LLM ошибка: %s", e)
-        await status_msg.edit_text(f"Ошибка Vision LLM: {e}")
+        await status_msg.edit_text(
+            "Не удалось распознать изображение через модель. "
+            "Попробуйте режим OCR или повторите позже."
+        )
         await state.clear()
     except Exception:
         logger.exception("Ошибка обработки изображения")
@@ -558,7 +562,7 @@ async def cb_append_backup(
 
         await state.update_data(proposed_backup_name=proposed)
         await callback.message.edit_text(
-            f"Имя бэкапа: <b>{proposed}</b>",
+            f"Имя бэкапа: <b>{esc(proposed)}</b>",
             reply_markup=get_backup_name_keyboard(proposed),
         )
         await state.set_state(UpdateDocumentFSM.append_backup_name)
@@ -652,12 +656,11 @@ async def _execute_append(
 
         # 2. Дополнение
         async def _on_progress(batch_num: int, total_batches: int) -> None:
-            try:
+            # Прогресс необязателен: сбой обновления не должен прерывать индексацию
+            with contextlib.suppress(Exception):
                 await message.edit_text(
                     f"Индексирую новый контент... ({batch_num}/{total_batches})"
                 )
-            except Exception:
-                pass
 
         new_chunks = await pipeline.append_text_to_document(
             text=data["append_text"],
@@ -679,10 +682,10 @@ async def _execute_append(
 
         backup_msg = ""
         if data.get("want_backup"):
-            backup_msg = f"\nБэкап: <b>{data['backup_name']}</b>"
+            backup_msg = f"\nБэкап: <b>{esc(data['backup_name'])}</b>"
 
         await message.edit_text(
-            f"Добавлено {new_chunks} новых фрагментов к <b>{doc.filename}</b> (v{doc.version + 1}).\n"
+            f"Добавлено {new_chunks} новых фрагментов к <b>{esc(doc.filename)}</b> (v{doc.version + 1}).\n"
             f"Всего фрагментов: {new_total}{backup_msg}"
         )
 

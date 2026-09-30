@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.formatting import esc
 from app.config import settings
 from app.db.models import User
 
@@ -46,7 +47,8 @@ async def cmd_law(message: Message, user: User, session: AsyncSession) -> None:
                 return
 
             # Форматируем результаты как краткий список
-            lines = [f"<b>Результаты по запросу:</b> <i>{args}</i>\n"]
+            # Запрос пользователя и тексты из внешнего API экранируются перед HTML
+            lines = [f"<b>Результаты по запросу:</b> <i>{esc(args)}</i>\n"]
             for i, r in enumerate(results[:5], 1):
                 title = (r.get("heading") or "Без заголовка")[:80]
                 info_parts = []
@@ -59,15 +61,15 @@ async def cmd_law(message: Message, user: User, session: AsyncSession) -> None:
                 info = " ".join(info_parts)
                 status = r.get("status", "")
 
-                lines.append(f"<b>{i}.</b> {title}")
+                lines.append(f"<b>{i}.</b> {esc(title)}")
                 if info:
-                    lines.append(f"   {info}")
+                    lines.append(f"   {esc(info)}")
                 if status:
-                    lines.append(f"   <i>{status}</i>")
+                    lines.append(f"   <i>{esc(status)}</i>")
                 # Показываем начало текста
                 text_preview = (r.get("text") or "")[:200].strip()
                 if text_preview:
-                    lines.append(f"   {text_preview}...")
+                    lines.append(f"   {esc(text_preview)}...")
                 lines.append("")
 
             await status_msg.edit_text("\n".join(lines))

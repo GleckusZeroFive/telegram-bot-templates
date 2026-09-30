@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import uuid
 
@@ -6,12 +7,13 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.formatting import esc
 from app.bot.keyboards import (
     get_delete_confirm_keyboard,
     get_documents_keyboard,
     get_reset_confirm_keyboard,
 )
-from app.core.indexer import QdrantIndexer
+from app.core.rag_pipeline import get_pipeline
 from app.db.models import User
 from app.db.repositories.document import DocumentRepository
 
@@ -59,7 +61,7 @@ async def cmd_docs(message: Message, user: User, session: AsyncSession) -> None:
         backup_str = " [бэкап]" if doc.is_backup else ""
 
         lines.append(
-            f"{i}. {emoji} <b>{doc.filename}</b>{version_str}{backup_str}\n"
+            f"{i}. {emoji} <b>{esc(doc.filename)}</b>{version_str}{backup_str}\n"
             f"   {doc.file_type.upper()} · {size} · {doc.chunk_count} фр. · {date}"
         )
 
@@ -104,7 +106,7 @@ async def cb_delete_select(
         return
 
     await callback.message.edit_text(
-        f"Удалить документ <b>{doc.filename}</b> ({doc.chunk_count} фрагментов)?",
+        f"Удалить документ <b>{esc(doc.filename)}</b> ({doc.chunk_count} фрагментов)?",
         reply_markup=get_delete_confirm_keyboard(doc_id_str),
     )
     await callback.answer()
@@ -129,13 +131,14 @@ async def cb_delete_confirm(
         await callback.answer("Документ не найден.", show_alert=True)
         return
 
-    filename = doc.filename
+    filename = esc(doc.filename)
 
     # Удаляем чанки из Qdrant
     if doc.qdrant_collection:
         try:
-            indexer = QdrantIndexer()
-            indexer.delete_document(doc.qdrant_collection, str(doc.id))
+            # Синхронный клиент Qdrant — из event loop уводим в поток
+            indexer = get_pipeline().indexer
+            await asyncio.to_thread(indexer.delete_document, doc.qdrant_collection, str(doc.id))
         except Exception as e:
             logger.warning("Ошибка удаления из Qdrant: %s", e)
             await callback.message.edit_text(
@@ -186,8 +189,8 @@ async def cb_reset_confirm(
     # Удаляем коллекцию из Qdrant
     collection_name = f"user_{user.telegram_id}"
     try:
-        indexer = QdrantIndexer()
-        indexer.delete_collection(collection_name)
+        indexer = get_pipeline().indexer
+        await asyncio.to_thread(indexer.delete_collection, collection_name)
     except Exception as e:
         logger.warning("Ошибка удаления коллекции из Qdrant: %s", e)
         await callback.message.edit_text(

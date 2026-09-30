@@ -1,7 +1,8 @@
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.config import TIER_LIMITS
 from app.db.models import User
@@ -47,12 +48,39 @@ class UserRepository:
         await self.session.refresh(user)
         return user
 
-    async def increment_queries_today(self, user_id: int) -> None:
+    async def try_consume_query(self, user: User) -> bool:
+        """Атомарно списать один запрос из дневного лимита.
+
+        Проверка и инкремент — один UPDATE: параллельные сообщения одного
+        пользователя не могут пройти лимит, прочитав одно и то же значение.
+
+        Returns:
+            True — запрос списан; False — дневной лимит исчерпан.
+        """
         result = await self.session.execute(
-            select(User).where(User.id == user_id)
+            update(User)
+            .where(User.id == user.id, User.queries_today < User.queries_limit)
+            .values(queries_today=User.queries_today + 1)
+            .returning(User.queries_today)
+            .execution_options(synchronize_session=False)
         )
-        user = result.scalar_one()
-        user.queries_today += 1
+        new_value = result.scalar_one_or_none()
+        await self.session.commit()
+        if new_value is None:
+            return False
+        # Обновляем объект в памяти без пометки «изменён»: иначе следующий
+        # commit этой сессии записал бы устаревшее значение поверх чужого инкремента
+        set_committed_value(user, "queries_today", new_value)
+        return True
+
+    async def refund_query(self, user_id: int) -> None:
+        """Вернуть списанный запрос, если его обработка не удалась."""
+        await self.session.execute(
+            update(User)
+            .where(User.id == user_id, User.queries_today > 0)
+            .values(queries_today=User.queries_today - 1)
+            .execution_options(synchronize_session=False)
+        )
         await self.session.commit()
 
     async def update_tier(
@@ -85,8 +113,11 @@ class UserRepository:
         await self.session.commit()
 
     async def reset_daily_queries(self) -> None:
-        """Сброс счётчика запросов (для ежедневного cron-а)."""
-        result = await self.session.execute(select(User))
-        for user in result.scalars():
-            user.queries_today = 0
+        """Сброс счётчика запросов (для ежедневного cron-а) — один UPDATE на всю таблицу."""
+        await self.session.execute(
+            update(User)
+            .where(User.queries_today != 0)
+            .values(queries_today=0)
+            .execution_options(synchronize_session=False)
+        )
         await self.session.commit()

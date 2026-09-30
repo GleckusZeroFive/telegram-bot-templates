@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -10,8 +11,8 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.bot.formatting import esc, llm_to_html
 from app.config import settings
-from app.presets import get_preset
 from app.core.classifier import classify_intent
 from app.core.conversation import get_context
 from app.core.embedder import EmbeddingServiceError
@@ -20,6 +21,7 @@ from app.db.models import QueryHistory, User
 from app.db.repositories.document import DocumentRepository
 from app.db.repositories.user import UserRepository
 from app.llm.provider import LLMError
+from app.presets import get_preset
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -147,16 +149,11 @@ def _is_quick_chat(text: str) -> bool:
     if len(words) <= 2:
         has_indicator = any(w.rstrip("?!.,") in _get_cached_rag_indicators() for w in words)
         if not has_indicator:
-            first_word = words[0].rstrip("?!.,")
-            if first_word in _FOLLOWUP_STARTERS:
-                return False  # пусть LLM-классификатор разберётся
-            return True
+            # Маркер follow-up в начале — пусть LLM-классификатор разберётся
+            return words[0].rstrip("?!.,") not in _FOLLOWUP_STARTERS
 
     # Чистые приветствия, прощания, благодарности, эмоции
-    if any(p.search(normalized) for p in _GREETING_PATTERNS):
-        return True
-
-    return False
+    return any(p.search(normalized) for p in _GREETING_PATTERNS)
 
 
 def _build_user_state(user: "User", docs: list) -> str:
@@ -190,56 +187,6 @@ def _build_user_state(user: "User", docs: list) -> str:
         law_str = "вкл" if user.law_search_enabled else "выкл"
         base += f" | Законодательство: {law_str}"
     return base
-
-
-def _md_to_html(text: str) -> str:
-    """Конвертация Markdown → Telegram HTML (safety net на случай если LLM проигнорирует промпт)."""
-    # Убираем CJK-символы, которые Qwen3 иногда вставляет в русский текст
-    text = re.sub(r"[一-鿿㐀-䶿　-〿＀-￯]+", "", text)
-    # Убираем артефакты LLM (внутренние теги моделей)
-    text = re.sub(r"</?assistant>", "", text)
-    # Нормализуем HTML-теги: <strong> -> <b>, <em> -> <i> (Telegram не поддерживает strong/em)
-    text = re.sub(r"<(/?)strong\b[^>]*>", r"<\1b>", text, flags=re.IGNORECASE)
-    text = re.sub(r"<(/?)em\b[^>]*>", r"<\1i>", text, flags=re.IGNORECASE)
-
-    # Экранируем HTML-спецсимволы (но сохраняем уже существующие HTML-теги)
-    # Сначала защитим легитимные HTML-теги
-    _SAFE_TAGS = re.compile(r"<(/?)([bi]|code|pre)(/?)>", re.IGNORECASE)
-    placeholders: list[str] = []
-
-    def _protect_tag(m: re.Match) -> str:
-        placeholders.append(m.group(0))
-        return f"\x00TAG{len(placeholders) - 1}\x00"
-
-    text = _SAFE_TAGS.sub(_protect_tag, text)
-
-    # Экранируем &, <, >
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-    # Восстанавливаем защищённые теги
-    for i, tag in enumerate(placeholders):
-        text = text.replace(f"\x00TAG{i}\x00", tag)
-
-    # Блоки кода ```...```
-    text = re.sub(r"```\w*\n?(.*?)```", r"<pre>\1</pre>", text, flags=re.DOTALL)
-
-    # Инлайн-код `...`
-    text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-
-    # Жирный **...**
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-
-    # Курсив *...* (не внутри слов, не после *)
-    text = re.sub(r"(?<!\*)\*([^\*]+?)\*(?!\*)", r"<i>\1</i>", text)
-
-    # Заголовки #{1,6} → жирный текст
-    text = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
-
-    # Списки: - элемент или * элемент → • элемент
-    text = re.sub(r"^[\-\*]\s+", "• ", text, flags=re.MULTILINE)
-
-    return text
-
 
 
 # ── Очистка LLM-сгенерированных ссылок на источники ──
@@ -279,7 +226,8 @@ def _format_sources(sources: list[dict]) -> str:
                 by_file.setdefault(fn, set())
 
     lines = []
-    for fn, pages in by_file.items():
+    for raw_fn, pages in by_file.items():
+        fn = esc(raw_fn)
         if pages:
             sorted_pages = sorted(pages)
             if len(sorted_pages) == 1:
@@ -305,9 +253,9 @@ def _format_sources(sources: list[dict]) -> str:
         if s.get("doc_number"):
             info_parts.append(f"N{s['doc_number']}")
         info = " ".join(info_parts)
-        lines.append(f"  ⚖️ {title}")
+        lines.append(f"  ⚖️ {esc(title)}")
         if info:
-            lines.append(f"      {info}")
+            lines.append(f"      {esc(info)}")
 
     return "\n".join(lines)
 
@@ -320,7 +268,7 @@ def _build_final_response(
 ) -> str:
     """Собрать финальное HTML-сообщение с источниками и моделью."""
     answer = _strip_llm_sources(answer)
-    response = _md_to_html(answer)
+    response = llm_to_html(answer)
 
     # Если ответ пустой после обработки — заменяем на "не найдено"
     if not response.strip():
@@ -384,7 +332,7 @@ async def _safe_edit_text(
                     await msg.edit_text(plain[:4096], parse_mode=None)
                     return True
                 except Exception:
-                    pass
+                    logger.debug("edit_text plain fallback failed", exc_info=True)
             return False
     return False
 
@@ -429,11 +377,9 @@ async def _stream_to_telegram(
                     sources = event["sources"]
                     model = event["model"]
                     law_search_failed = event.get("law_search_failed", False)
-                    # Update status: search done, generation starting
-                    try:
+                    # Статус «поиск завершён» необязателен: сбой не должен ронять ответ
+                    with contextlib.suppress(Exception):
                         await status_msg.edit_text("Генерирую ответ...", parse_mode=None)
-                    except Exception:
-                        pass
                     continue
                 text = event["text"] if isinstance(event, dict) else event
                 buffer += text
@@ -502,8 +448,13 @@ async def process_query_text(
     skip_retrieval: bool = False,
     user_state: str | None = None,
     mode: str = "rag",
-) -> None:
-    """RAG-запрос со стримингом — переиспользуется из text и voice хендлеров."""
+) -> bool:
+    """RAG-запрос со стримингом — переиспользуется из text и voice хендлеров.
+
+    Returns:
+        True — ответ сгенерирован полностью; False — обработка прервалась ошибкой
+        (пользователь уже получил сообщение об ошибке, запрос можно вернуть в лимит).
+    """
     full_text = ""
 
     try:
@@ -539,10 +490,6 @@ async def process_query_text(
         if not await _safe_edit_text(status_msg, response):
             logger.error("Не удалось отправить финальное сообщение (flood control)")
 
-        # Инкрементируем счётчик запросов
-        user_repo = UserRepository(session)
-        await user_repo.increment_queries_today(user.id)
-
         # Сохраняем историю запроса
         try:
             history = QueryHistory(
@@ -560,12 +507,13 @@ async def process_query_text(
 
         # Обновляем контекст диалога (raw answer, до HTML-конвертации)
         conv_ctx.add_pair(question, full_text)
+        return True
 
     except LLMError as e:
         logger.exception("Ошибка LLM при обработке запроса")
         if full_text:
-            partial = _md_to_html(full_text)
-            partial += "\n\n<i>\u26a0\ufe0f Генерация прервана: " + str(e) + "</i>"
+            partial = llm_to_html(full_text)
+            partial += "\n\n<i>\u26a0\ufe0f Генерация прервана: " + esc(e) + "</i>"
             await _safe_edit_text(status_msg, partial)
         else:
             await _safe_edit_text(status_msg, str(e), parse_mode=None)
@@ -578,7 +526,7 @@ async def process_query_text(
     except Exception:
         logger.exception("Ошибка при обработке запроса")
         if full_text:
-            partial = _md_to_html(full_text)
+            partial = llm_to_html(full_text)
             partial += "\n\n<i>\u26a0\ufe0f Генерация прервана из-за внутренней ошибки.</i>"
             await _safe_edit_text(status_msg, partial)
         else:
@@ -586,6 +534,7 @@ async def process_query_text(
                 status_msg, "Произошла внутренняя ошибка. Попробуйте позже.",
                 parse_mode=None,
             )
+    return False
 
 
 def _rag_status_text(ready_docs: list, user: "User") -> str:
@@ -604,10 +553,13 @@ async def route_and_process(
     status_msg: Message,
     user: User,
     session: AsyncSession,
-) -> None:
+) -> bool:
     """Единая маршрутизация: chat by default, RAG when needed.
 
     Используется из text- и voice-хендлеров.
+
+    Returns:
+        True — ответ отдан полностью (см. process_query_text).
     """
     doc_repo = DocumentRepository(session)
     docs = await doc_repo.get_by_user(user.id)
@@ -617,28 +569,25 @@ async def route_and_process(
     # 1. Нечего искать → всегда чат
     if not ready_docs and not user.law_search_enabled:
         await _safe_edit_text(status_msg, "Думаю...", parse_mode=None)
-        await process_query_text(
+        return await process_query_text(
             question, status_msg, user, session,
             skip_retrieval=True, user_state=state, mode="chat",
         )
-        return
 
     # 2. Явный RAG-запрос (быстрый regex)
     if _needs_rag(question):
         await _safe_edit_text(
             status_msg, _rag_status_text(ready_docs, user), parse_mode=None,
         )
-        await process_query_text(question, status_msg, user, session, user_state=state)
-        return
+        return await process_query_text(question, status_msg, user, session, user_state=state)
 
     # 3. Очевидный чат (приветствия, 1-2 слова) → экономим на классификаторе
     if _is_quick_chat(question):
         await _safe_edit_text(status_msg, "Думаю...", parse_mode=None)
-        await process_query_text(
+        return await process_query_text(
             question, status_msg, user, session,
             skip_retrieval=True, user_state=state, mode="chat",
         )
-        return
 
     # 4. Неоднозначный случай → LLM-классификатор (default: chat)
     doc_names = [d.filename for d in ready_docs]
@@ -655,7 +604,7 @@ async def route_and_process(
         await _safe_edit_text(
             status_msg, _rag_status_text(ready_docs, user), parse_mode=None,
         )
-        await process_query_text(question, status_msg, user, session, user_state=state)
+        return await process_query_text(question, status_msg, user, session, user_state=state)
     elif intent == "followup":
         conv_ctx_fw = get_context(user.telegram_id)
         if conv_ctx_fw.last_rag_query and ready_docs:
@@ -664,10 +613,10 @@ async def route_and_process(
             await _safe_edit_text(
                 status_msg, _rag_status_text(ready_docs, user), parse_mode=None,
             )
-            await process_query_text(question, status_msg, user, session, user_state=state)
+            return await process_query_text(question, status_msg, user, session, user_state=state)
         else:
             await _safe_edit_text(status_msg, "Думаю...", parse_mode=None)
-            await process_query_text(
+            return await process_query_text(
                 question, status_msg, user, session,
                 skip_retrieval=True, user_state=state, mode="followup",
             )
@@ -676,7 +625,7 @@ async def route_and_process(
         conv_ctx_ch = get_context(user.telegram_id)
         conv_ctx_ch.last_rag_query = None
         await _safe_edit_text(status_msg, "Думаю...", parse_mode=None)
-        await process_query_text(
+        return await process_query_text(
             question, status_msg, user, session,
             skip_retrieval=True, user_state=state, mode=intent,
         )
@@ -688,13 +637,44 @@ async def handle_query(message: Message, user: User, session: AsyncSession) -> N
     if not question or question.startswith("/"):
         return
 
-    # Проверка лимита запросов
-    if user.queries_today >= user.queries_limit:
-        await message.answer(
-            f"Достигнут дневной лимит запросов ({user.queries_limit}).\n"
+    status_msg = await message.answer("Думаю...")
+    await answer_with_quota(question, status_msg, user, session)
+
+
+async def answer_with_quota(
+    question: str,
+    status_msg: Message,
+    user: User,
+    session: AsyncSession,
+    limit_prefix: str = "",
+) -> None:
+    """Списать запрос из дневного лимита, ответить, вернуть запрос при ошибке.
+
+    Запрос списывается ДО обработки одним атомарным UPDATE — параллельные
+    сообщения не проходят лимит. Если ответ не удался, запрос возвращается:
+    как и раньше, в лимит идут только успешные ответы.
+    """
+    # Идентификаторы читаем заранее: после rollback атрибуты ORM-объекта
+    # истекают, а ленивая подгрузка в async-сессии недоступна
+    user_id, telegram_id = user.id, user.telegram_id
+
+    user_repo = UserRepository(session)
+    if not await user_repo.try_consume_query(user):
+        await _safe_edit_text(
+            status_msg,
+            f"{limit_prefix}Достигнут дневной лимит запросов ({user.queries_limit}).\n"
             "Попробуйте завтра.",
         )
         return
 
-    status_msg = await message.answer("Думаю...")
-    await route_and_process(question, status_msg, user, session)
+    answered = False
+    try:
+        answered = await route_and_process(question, status_msg, user, session)
+    finally:
+        if not answered:
+            try:
+                # Сбой мог оставить транзакцию в ошибочном состоянии
+                await session.rollback()
+                await user_repo.refund_query(user_id)
+            except Exception:
+                logger.exception("Не удалось вернуть запрос в лимит (user=%s)", telegram_id)
