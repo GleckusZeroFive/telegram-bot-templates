@@ -138,6 +138,33 @@ async def test_generate_with_image_and_cache_flag_does_not_crash():
     assert await p.generate(vision, use_cache=True) == "описание"
 
 
+# ── extra_body (например, отключение reasoning) ───────────────
+
+def test_extra_body_is_read_from_env_as_json(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.setenv("LLM_EXTRA_BODY", '{"reasoning": {"enabled": false}}')
+    assert Settings(_env_file=None).llm_extra_body == {"reasoning": {"enabled": False}}
+
+    monkeypatch.setenv("LLM_EXTRA_BODY", "")
+    assert Settings(_env_file=None).llm_extra_body == {}
+
+
+@pytest.mark.asyncio
+async def test_extra_body_is_sent_with_every_request():
+    p = OpenAICompatibleProvider(
+        base_url="http://test/v1", model="m", extra_body={"reasoning": {"enabled": False}},
+    )
+    p._client = MagicMock()
+    p._client.chat.completions.create = AsyncMock(return_value=_completion("rag"))
+    await p.generate([{"role": "user", "content": "q"}])
+    assert p._client.chat.completions.create.call_args.kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+
+    p._client.chat.completions.create = AsyncMock(return_value=_Stream(["ok"]))
+    assert [c async for c in p.generate_stream([{"role": "user", "content": "q"}])] == ["ok"]
+    assert p._client.chat.completions.create.call_args.kwargs["extra_body"] == {"reasoning": {"enabled": False}}
+
+
 # ── FallbackProvider: стриминг ────────────────────────────────
 
 @pytest.mark.asyncio

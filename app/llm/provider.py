@@ -104,9 +104,12 @@ class OpenAICompatibleProvider:
     """
 
     def __init__(self, base_url: str, model: str, api_key: str = "",
-                 key_manager: RoundRobinKeyManager | None = None) -> None:
+                 key_manager: RoundRobinKeyManager | None = None,
+                 extra_body: dict[str, Any] | None = None) -> None:
         self.model = model
         self.base_url = base_url
+        # Поля сверх стандарта OpenAI (например, отключение reasoning) — в каждый запрос
+        self._extra_body = extra_body or None
         self._key_manager = key_manager
         self._api_key = api_key or _PLACEHOLDER_API_KEY
         self._client = self._make_client(self._api_key)
@@ -164,6 +167,7 @@ class OpenAICompatibleProvider:
                     messages=messages,
                     temperature=use_temp,
                     max_tokens=max_tokens if max_tokens is not None else settings.llm_max_tokens,
+                    extra_body=self._extra_body,
                 )
 
                 if not response.choices:
@@ -281,6 +285,7 @@ class OpenAICompatibleProvider:
                     temperature=temperature if temperature is not None else settings.llm_temperature,
                     max_tokens=max_tokens if max_tokens is not None else settings.llm_max_tokens,
                     stream=True,
+                    extra_body=self._extra_body,
                 )
                 break  # Подключение успешно
 

@@ -1,4 +1,11 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+from typing import Annotated, Any
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+# JSON-объект из переменной окружения; пустая строка = {} (иначе Settings падает при импорте)
+JsonObject = Annotated[dict[str, Any], NoDecode]
 
 
 class Settings(BaseSettings):
@@ -46,12 +53,25 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_keys: str = ""  # несколько ключей через запятую — round-robin
     llm_model: str = ""
+    # Дополнительные поля JSON в каждом запросе к LLM (env: JSON-строка).
+    # Нужны для reasoning-моделей: классификатору хватает 20 токенов только без
+    # рассуждения, иначе весь бюджет уходит в reasoning и ответ пустой.
+    # OpenRouter-совместимые API: {"reasoning": {"enabled": false}}
+    llm_extra_body: JsonObject = {}
 
     # === LLM fallback (опционально; включается, если задан llm_fallback_model) ===
-    # Пустые base_url / api_key наследуются от основного провайдера.
+    # Пустые base_url / api_key / extra_body наследуются от основного провайдера.
     llm_fallback_base_url: str = ""
     llm_fallback_api_key: str = ""
     llm_fallback_model: str = ""
+    llm_fallback_extra_body: JsonObject = {}
+
+    @field_validator("llm_extra_body", "llm_fallback_extra_body", mode="before")
+    @classmethod
+    def _parse_json_object(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return json.loads(value) if value.strip() else {}
+        return value
 
     # === LLM общие ===
     llm_temperature: float = 0.1

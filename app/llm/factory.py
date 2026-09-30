@@ -30,6 +30,7 @@ def get_llm_provider() -> OpenAICompatibleProvider | FallbackProvider:
         model=settings.llm_model,
         api_key=primary_key,
         key_manager=key_manager,
+        extra_body=settings.llm_extra_body,
     )
 
     if not settings.llm_fallback_model:
@@ -40,6 +41,7 @@ def get_llm_provider() -> OpenAICompatibleProvider | FallbackProvider:
         base_url=settings.llm_fallback_base_url or settings.llm_base_url,
         model=settings.llm_fallback_model,
         api_key=settings.llm_fallback_api_key or primary_key,
+        extra_body=settings.llm_fallback_extra_body or settings.llm_extra_body,
     )
     _provider = FallbackProvider(primary, fallback)
     return _provider
