@@ -124,6 +124,9 @@ class OpenAICompatibleProvider:
             api_key=api_key,
             base_url=self.base_url,
             timeout=httpx.Timeout(settings.llm_timeout, connect=10.0),
+            # Повторы и backoff делает сам провайдер (_MAX_RETRIES); встроенные
+            # повторы SDK умножали бы их: до 3 × 3 попыток на один вызов
+            max_retries=0,
         )
 
     def _rotate_key(self) -> None:
