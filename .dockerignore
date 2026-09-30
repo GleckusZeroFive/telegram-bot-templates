@@ -1,6 +1,8 @@
 .venv/
 .git/
+.github/
 .pytest_cache/
+.ruff_cache/
 __pycache__/
 *.pyc
 tests/
@@ -8,3 +10,6 @@ bench_ingest.py
 uploads/
 .env
 *.md
+# Downloaded in the image at the pinned revision (scripts/download_intent_model.py)
+app/core/intent_model/model.onnx
+app/core/intent_model/model.onnx.data

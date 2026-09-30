@@ -6,10 +6,10 @@ from pathlib import Path
 # Добавляем корень проекта в sys.path для импорта app
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from app.config import settings
 from app.db.models import Base
 

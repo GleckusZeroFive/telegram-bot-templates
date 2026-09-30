@@ -1,3 +1,6 @@
+# Runtime dependencies. Versions are the set the test suite runs against in CI.
+# torch is installed separately (CPU wheel), see Dockerfile and .github/workflows/ci.yml.
+
 # Telegram Bot
 aiogram==3.17.0
 
@@ -22,23 +25,21 @@ faster-whisper==1.1.0
 # Config
 pydantic-settings==2.7.0
 
-# LLM client (OpenAI-compatible for Cerebras/Groq)
+# LLM client (any OpenAI-compatible API)
 openai==1.58.0
 
-# Embeddings (локальная модель sentence-transformers)
-sentence-transformers>=3.3.0
+# Embeddings (local sentence-transformers model)
+sentence-transformers==6.1.0
+transformers==5.17.0
 
-# Быстрая загрузка моделей с HuggingFace (Rust-based, параллельные соединения)
-hf_transfer>=0.1.8
+# Intent classifier (ONNX model from Hugging Face)
+onnxruntime==1.30.0
+huggingface-hub==1.33.0
 
-# HTTP client (для Law Corpus API)
+# HTTP client (Law Corpus API, healthcheck)
 httpx==0.28.0
 
-# Testing
-pytest==8.3.4
-pytest-asyncio==0.24.0
-
 # Russian morphological analysis (lemmatization for BM25)
-pymorphy3>=2.0
-pymorphy3-dicts-ru>=2.0
-PyYAML>=6.0
+pymorphy3==2.0.6
+pymorphy3-dicts-ru==2.4.417150.4580142
+PyYAML==6.0.3

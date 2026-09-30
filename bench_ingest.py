@@ -72,7 +72,11 @@ async def main() -> None:
         logger.info("  Уникальных страниц: %d, разделов: %d", len(pages), len(sections))
 
     # Мелкие чанки (< 100 символов)
-    small = [(c["metadata"].get("page_number", "?"), len(c["text"]), c["text"][:60]) for c in chunks if len(c["text"]) < 100]
+    small = [
+        (c["metadata"].get("page_number", "?"), len(c["text"]), c["text"][:60])
+        for c in chunks
+        if len(c["text"]) < 100
+    ]
     if small:
         logger.warning("  Мелких чанков (<100 симв): %d", len(small))
         for page, sz, preview in small[:5]:

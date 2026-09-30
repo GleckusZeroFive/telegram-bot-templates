@@ -2,8 +2,12 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.config import settings
+
+if TYPE_CHECKING:
+    import pymupdf
 
 logger = logging.getLogger(__name__)
 

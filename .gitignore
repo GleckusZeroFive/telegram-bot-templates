@@ -35,9 +35,10 @@ alembic/versions/__pycache__/
 logs/
 *.log
 
-# Qdrant static binary (скачивается вручную: scripts/download-qdrant.sh)
-qdrant-bin
+# Intent classifier weights: python scripts/download_intent_model.py
+app/core/intent_model/model.onnx
+app/core/intent_model/model.onnx.data
+
+# Local tooling
 CLAUDE.md
 .claude/
-app/core/intent_model/model.onnx.data
-app/core/intent_model/model.onnx

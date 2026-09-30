@@ -75,7 +75,7 @@ class QdrantIndexer:
                     "metadata": chunk.get("metadata", {}),
                 },
             )
-            for chunk, embedding in zip(chunks, embeddings)
+            for chunk, embedding in zip(chunks, embeddings, strict=True)
         ]
 
         # Загрузка батчами по 100

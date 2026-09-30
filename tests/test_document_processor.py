@@ -1,6 +1,8 @@
-import pytest
 from pathlib import Path
-from app.core.document_processor import DocumentProcessor, SUPPORTED_TYPES
+
+import pytest
+
+from app.core.document_processor import SUPPORTED_TYPES, DocumentProcessor
 
 
 @pytest.fixture

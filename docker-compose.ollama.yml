@@ -1,0 +1,8 @@
+# Ollama running on the Docker host:
+#   LLM_BASE_URL=http://host.docker.internal:11434/v1
+#   docker compose -f docker-compose.yml -f docker-compose.ollama.yml up -d
+# Docker Desktop resolves host.docker.internal itself; Linux engines need the mapping below.
+services:
+  bot:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

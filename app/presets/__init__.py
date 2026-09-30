@@ -1,3 +1,3 @@
-from app.presets.loader import get_preset, Preset
+from app.presets.loader import Preset, get_preset
 
-__all__ = ["get_preset", "Preset"]
+__all__ = ["Preset", "get_preset"]

@@ -1,40 +1,44 @@
 services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ragbot}
+      POSTGRES_USER: ${POSTGRES_USER:-ragbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  qdrant:
+    # Server version matches qdrant-client in requirements.txt
+    image: qdrant/qdrant:v1.12.5
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
   bot:
     build: .
     env_file: .env
     environment:
-      POSTGRES_HOST: localhost
-      QDRANT_HOST: localhost
-      LAW_API_URL: http://law-api:8100
-      MODULES_GATEWAY_URL: ${MODULES_GATEWAY_URL:-}
-      MODULES_API_KEY: ${MODULES_API_KEY:-}
-      HF_HOME: /app/models
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
       HF_HUB_OFFLINE: "1"
-    extra_hosts:
-      - "host.docker.internal:172.17.0.1"
-    networks:
-      - default
-      - rag-shared
     volumes:
-      - pg_data:/var/lib/postgresql/data
-      - qdrant_data:/var/lib/qdrant/storage
       - ./uploads:/app/uploads
-      - ./app:/app/app:ro
-      - whisper_cache:/root/.cache/huggingface
-      - st_models:/root/.cache/torch/sentence_transformers
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
     restart: unless-stopped
-    # Раскомментировать для отладки:
-    # ports:
-    #   - "5432:5432"
-    #   - "6333:6333"
 
 volumes:
   pg_data:
   qdrant_data:
-  whisper_cache:
-  st_models:
-
-networks:
-  default:
-  rag-shared:
-    external: true

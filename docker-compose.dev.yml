@@ -1,11 +1,17 @@
+# Development override: mounts the code so changes apply after `docker compose restart bot`,
+# and exposes Postgres and Qdrant to the host for local runs and tests.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  qdrant:
+    ports:
+      - "127.0.0.1:6333:6333"
+
   bot:
     volumes:
       - ./app:/app/app:ro
       - ./alembic:/app/alembic:ro
       - ./uploads:/app/uploads
-      - ./entrypoint.sh:/entrypoint.sh
-      - whisper_cache:/root/.cache/huggingface
-
-volumes:
-  whisper_cache:

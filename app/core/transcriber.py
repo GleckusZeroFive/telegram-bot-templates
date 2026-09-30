@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import shutil
 import tempfile
@@ -105,7 +106,5 @@ async def transcribe(ogg_bytes: bytes) -> str:
         return text.strip()
     finally:
         for p in (ogg_path, wav_path):
-            try:
+            with contextlib.suppress(OSError):
                 Path(p).unlink(missing_ok=True)
-            except OSError:
-                pass
