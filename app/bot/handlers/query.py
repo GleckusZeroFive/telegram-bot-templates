@@ -325,6 +325,10 @@ async def _safe_edit_text(
                 )
                 return False
         except TelegramBadRequest as e:
+            # Текст совпал с уже показанным (стриминг успел вывести его целиком) —
+            # сообщение в нужном состоянии, это успех, а не сбой отправки
+            if "message is not modified" in str(e):
+                return True
             logger.warning("edit_text TelegramBadRequest: %s (parse_mode=%s)", e, parse_mode)
             if parse_mode == "HTML":
                 plain = re.sub(r"<[^>]+>", "", text)

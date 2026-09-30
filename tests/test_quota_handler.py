@@ -58,6 +58,20 @@ async def test_exception_is_refunded_and_propagated(monkeypatch, repo, user, ses
 
 
 @pytest.mark.asyncio
+async def test_unchanged_message_counts_as_delivered():
+    """Финальный текст совпал со стримом: Telegram отвечает «not modified», это не сбой."""
+    from aiogram.exceptions import TelegramBadRequest
+
+    msg = MagicMock()
+    msg.edit_text = AsyncMock(side_effect=TelegramBadRequest(
+        method=MagicMock(), message="Bad Request: message is not modified: specified new message content",
+    ))
+
+    assert await query._safe_edit_text(msg, "текст") is True
+    assert msg.edit_text.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_exhausted_limit_skips_processing(monkeypatch, repo, user, session):
     repo.try_consume_query = AsyncMock(return_value=False)
     route = AsyncMock()
