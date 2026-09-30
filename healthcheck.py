@@ -38,7 +38,7 @@ async def _timed(name: str, coro) -> CheckResult:
         detail = await asyncio.wait_for(coro, timeout=_TIMEOUT)
         ms = int((time.monotonic() - t0) * 1000)
         return CheckResult(name=name, ok=True, detail=detail, elapsed_ms=ms)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         ms = int((time.monotonic() - t0) * 1000)
         return CheckResult(name=name, ok=False, detail="TIMEOUT", elapsed_ms=ms)
     except Exception as e:
@@ -96,12 +96,14 @@ async def check_embedding() -> str:
 async def check_llm() -> str:
     import httpx
 
-    # Проверяем Claude proxy через /health эндпоинт
-    proxy_url = settings.claude_proxy_url.rstrip("/v1").rstrip("/")
+    # GET /models есть у OpenAI-совместимых API (OpenAI, OpenRouter, Groq, Ollama, vLLM)
+    base_url = settings.llm_base_url.rstrip("/")
+    api_key = settings.llm_api_key or settings.llm_api_keys.split(",")[0].strip()
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        resp = await client.get(f"{proxy_url}/health")
+        resp = await client.get(f"{base_url}/models", headers=headers)
         resp.raise_for_status()
-    return f"Claude proxy OK, model={settings.claude_model}"
+    return f"{base_url} OK, model={settings.llm_model or '(LLM_MODEL не задан)'}"
 
 
 def _print_results(results: list[CheckResult]) -> None:
@@ -127,7 +129,7 @@ async def main() -> int:
         _timed("Qdrant", check_qdrant()),
         _timed("Telegram", check_telegram()),
         _timed("Embedding", check_embedding()),
-        _timed("LLM (Claude proxy)", check_llm()),
+        _timed("LLM", check_llm()),
     )
     _print_results(list(results))
     return 0 if all(r.ok for r in results) else 1

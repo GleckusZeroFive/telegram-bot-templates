@@ -9,7 +9,8 @@ class Settings(BaseSettings):
     )
 
     # === Bot Preset ===
-    bot_preset: str = "default"  # "corporate_faq", "client_faq", "legal_ocr", "tutor", "voice_assistant"
+    # default | corporate_faq | customer_support | legal_assistant | tutor | voice_assistant
+    bot_preset: str = "default"
 
     # === Telegram ===
     telegram_bot_token: str = ""
@@ -19,7 +20,7 @@ class Settings(BaseSettings):
     postgres_port: int = 5432
     postgres_db: str = "ragbot"
     postgres_user: str = "ragbot"
-    postgres_password: str = "ragbot_secret"
+    postgres_password: str = ""  # задаётся в .env
 
     @property
     def database_url(self) -> str:
@@ -40,20 +41,25 @@ class Settings(BaseSettings):
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333
 
-    # === LLM Primary (Cerebras) ===
-    cerebras_api_url: str = "https://api.cerebras.ai/v1"
-    cerebras_api_key: str = ""
-    cerebras_api_keys: str = ""  # comma-separated keys for round-robin  # csk-...
-    cerebras_model: str = "gpt-oss-120b"
+    # === LLM (любой OpenAI-совместимый API: OpenAI, OpenRouter, Groq, Ollama, vLLM...) ===
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: str = ""
+    llm_api_keys: str = ""  # несколько ключей через запятую — round-robin
+    llm_model: str = ""
 
-    # === LLM Fallback (Claude через прокси на хосте) ===
-    claude_proxy_url: str = "http://host.docker.internal:8200/v1"
-    claude_model: str = "claude-haiku-4-5-20251001"
+    # === LLM fallback (опционально; включается, если задан llm_fallback_model) ===
+    # Пустые base_url / api_key наследуются от основного провайдера.
+    llm_fallback_base_url: str = ""
+    llm_fallback_api_key: str = ""
+    llm_fallback_model: str = ""
 
     # === LLM общие ===
-    llm_fallback_enabled: bool = True  # авто-переключение на Claude при ошибке Cerebras
     llm_temperature: float = 0.1
     llm_max_tokens: int = 1024
+    llm_timeout: float = 60.0  # секунд на один запрос к LLM
+    # Потолок для вспомогательных вызовов (переформулировка запроса, HyDE):
+    # при превышении поиск идёт по исходному вопросу, ответ не блокируется.
+    llm_aux_timeout: float = 15.0
 
     # === Embeddings (локальная модель sentence-transformers) ===
     embedding_model: str = "intfloat/multilingual-e5-large"
@@ -88,7 +94,9 @@ class Settings(BaseSettings):
     conversation_max_context_chars: int = 24_000  # ~6000 токенов — бюджет на историю
 
     # === Intent Classifier ===
-    classifier_enabled: bool = True          # LLM-классификатор интентов (rag/chat/followup)
+    # ONNX-модель (scripts/download_intent_model.py), при низкой уверенности — LLM.
+    # false — неоднозначные сообщения сразу идут в RAG.
+    classifier_enabled: bool = True
     classifier_max_tokens: int = 20          # Макс токенов для ответа классификатора
     classifier_model: str | None = None       # Модель для классификатора (None = основная)
     classifier_temperature: float = 0.0      # Детерминированная классификация

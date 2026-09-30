@@ -1,4 +1,4 @@
-"""Обработка изображений: OCR (Tesseract) и Vision LLM (Claude через прокси)."""
+"""Обработка изображений: OCR (Tesseract) и Vision LLM (модель должна поддерживать картинки)."""
 
 import asyncio
 import base64
@@ -35,7 +35,7 @@ async def ocr_tesseract(image_path: Path) -> str:
 
 
 async def describe_with_vision_llm(image_path: Path) -> str:
-    """Проанализировать изображение через Vision LLM (Claude через прокси)."""
+    """Проанализировать изображение через Vision LLM (сконфигурированная модель с поддержкой изображений)."""
     # Читаем изображение и кодируем в base64
     image_bytes = await asyncio.to_thread(image_path.read_bytes)
     b64_data = base64.b64encode(image_bytes).decode("utf-8")

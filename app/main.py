@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -7,7 +8,17 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from app.bot.handlers import docs_router, keys_router, law_router, query_router, quiz_router, start_router, update_router, upload_router, voice_router
+from app.bot.handlers import (
+    docs_router,
+    keys_router,
+    law_router,
+    query_router,
+    quiz_router,
+    start_router,
+    update_router,
+    upload_router,
+    voice_router,
+)
 from app.bot.middlewares import AuthMiddleware
 from app.config import settings
 from app.db.database import db
@@ -104,10 +115,8 @@ async def on_shutdown() -> None:
     global _reset_task
     if _reset_task and not _reset_task.done():
         _reset_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await _reset_task
-        except asyncio.CancelledError:
-            pass
 
     # Закрываем HTTP-клиент LawClient (если pipeline был инициализирован)
     from app.core.rag_pipeline import _pipeline
@@ -120,6 +129,13 @@ async def on_shutdown() -> None:
 
 async def main() -> None:
     logger.info("RAG Document Bot starting...")
+
+    # Ошибки конфигурации (.env) — до старта polling, а не на первом сообщении
+    from app.llm.factory import get_llm_provider
+    from app.presets import get_preset
+
+    get_preset()
+    get_llm_provider()
 
     bot = Bot(
         token=settings.telegram_bot_token,

@@ -7,39 +7,39 @@ _provider: OpenAICompatibleProvider | FallbackProvider | None = None
 def get_llm_provider() -> OpenAICompatibleProvider | FallbackProvider:
     """Фабрика LLM-провайдера (singleton).
 
-    Если задан cerebras_api_key — Cerebras как primary, Claude как fallback.
-    Иначе — только Claude через прокси.
+    Основной провайдер — любой OpenAI-совместимый API (LLM_BASE_URL + LLM_MODEL).
+    Если задан LLM_FALLBACK_MODEL, поверх него строится FallbackProvider.
     """
     global _provider
     if _provider is not None:
         return _provider
 
-    if settings.cerebras_api_key:
-        # Build round-robin key manager if multiple keys provided
-        key_manager = None
-        if settings.cerebras_api_keys:
-            keys = [k.strip() for k in settings.cerebras_api_keys.split(",") if k.strip()]
-            if len(keys) > 1:
-                key_manager = RoundRobinKeyManager(keys)
-
-        primary = OpenAICompatibleProvider(
-            base_url=settings.cerebras_api_url,
-            model=settings.cerebras_model,
-            api_key=settings.cerebras_api_key,
-            key_manager=key_manager,
-        )
-        if settings.llm_fallback_enabled:
-            fallback = OpenAICompatibleProvider(
-                base_url=settings.claude_proxy_url,
-                model=settings.claude_model,
-            )
-            _provider = FallbackProvider(primary, fallback)
-        else:
-            _provider = primary
-    else:
-        _provider = OpenAICompatibleProvider(
-            base_url=settings.claude_proxy_url,
-            model=settings.claude_model,
+    if not settings.llm_model:
+        raise RuntimeError(
+            "LLM_MODEL не задан. Укажите модель и LLM_BASE_URL в .env (см. .env.example)."
         )
 
+    key_manager = None
+    keys = [k.strip() for k in settings.llm_api_keys.split(",") if k.strip()]
+    if len(keys) > 1:
+        key_manager = RoundRobinKeyManager(keys)
+
+    primary_key = settings.llm_api_key or (keys[0] if keys else "")
+    primary = OpenAICompatibleProvider(
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        api_key=primary_key,
+        key_manager=key_manager,
+    )
+
+    if not settings.llm_fallback_model:
+        _provider = primary
+        return _provider
+
+    fallback = OpenAICompatibleProvider(
+        base_url=settings.llm_fallback_base_url or settings.llm_base_url,
+        model=settings.llm_fallback_model,
+        api_key=settings.llm_fallback_api_key or primary_key,
+    )
+    _provider = FallbackProvider(primary, fallback)
     return _provider

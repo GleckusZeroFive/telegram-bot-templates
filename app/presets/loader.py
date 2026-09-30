@@ -120,12 +120,16 @@ def get_preset() -> Preset:
     from app.config import settings
     preset_name = settings.bot_preset
 
+    # Опечатка в BOT_PRESET должна останавливать запуск: пустой Preset() без промптов
+    # давал бота, который стартует и отвечает мусором
     try:
         data = _load_yaml(preset_name)
-        _preset_cache = _parse_preset(data)
-        logger.info("Пресет %s загружен: name=%s", preset_name, _preset_cache.name)
-    except FileNotFoundError:
-        logger.error("Пресет %s не найден, используется встроенный default", preset_name)
-        _preset_cache = Preset()
+    except FileNotFoundError as e:
+        available = ", ".join(sorted(p.stem for p in _PRESETS_DIR.glob("*.yml")))
+        raise RuntimeError(
+            f"BOT_PRESET={preset_name!r} не найден. Доступные пресеты: {available}"
+        ) from e
 
+    _preset_cache = _parse_preset(data)
+    logger.info("Пресет %s загружен: name=%s", preset_name, _preset_cache.name)
     return _preset_cache
