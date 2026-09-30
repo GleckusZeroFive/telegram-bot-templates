@@ -20,7 +20,7 @@ class RAGPipeline:
     Оркестратор RAG-пайплайна.
     Два основных потока:
     1. ingest_document() — загрузка документа
-    2. query() — вопрос-ответ
+    2. query_stream() — вопрос-ответ со стримингом
     """
 
     def __init__(self) -> None:
@@ -215,84 +215,49 @@ class RAGPipeline:
         ]
         return await self.generator.provider.generate(messages)
 
-    async def query(
+    async def _prepare_search(
         self,
         question: str,
-        user_telegram_id: int,
-        document_id: str | None = None,
-        conversation_history: list[dict[str, str]] | None = None,
-        law_search_enabled: bool = False,
-        user_state: str | None = None,
-    ) -> dict:
-        """
-        Полный поток Q&A:
-        вопрос → эмбеддинг → поиск в Qdrant → генерация ответа
+        conversation_history: list[dict[str, str]] | None,
+    ) -> tuple[str, list[float], list[float]]:
+        """Переформулировка запроса и HyDE.
+
+        Оба шага — улучшения поиска, а не обязательные этапы: при ошибке или
+        превышении llm_aux_timeout поиск идёт по исходному вопросу.
+        Вызовы последовательные, чтобы не упираться в rate-limit провайдера.
 
         Returns:
-            {"answer": str, "sources": list, "model": str}
+            (search_query, query_vector, dense_vector) — query_vector считается по
+            исходному вопросу (для relevance gate), dense_vector — по HyDE-документу.
         """
-        collection_name = f"user_{user_telegram_id}"
-
-        # 1. Подготовка запроса: переформулировка → HyDE (последовательно, чтобы избежать rate-limit)
         search_query = question
         if settings.query_rewrite_enabled:
             try:
-                rewritten = await self.generator.rewrite_query(question, conversation_history)
+                rewritten = await asyncio.wait_for(
+                    self.generator.rewrite_query(question, conversation_history),
+                    timeout=settings.llm_aux_timeout,
+                )
                 if rewritten and rewritten != question:
                     search_query = rewritten
                     logger.info("Query rewritten: '%s' -> '%s'", question[:60], search_query[:60])
             except Exception as e:
-                logger.warning("rewrite_query failed: %s", e)
+                logger.warning("rewrite_query failed: %r", e)
 
         query_vector = await self.embedder.embed_query(question)
-        hyde_vector = query_vector
+        dense_vector = query_vector
         if settings.hyde_enabled:
             try:
-                hyde_doc = await self.generator.generate_hypothetical(search_query)
+                hyde_doc = await asyncio.wait_for(
+                    self.generator.generate_hypothetical(search_query),
+                    timeout=settings.llm_aux_timeout,
+                )
                 if hyde_doc:
                     logger.info("HyDE doc: '%s...'", hyde_doc[:80])
-                    hyde_vector = await self.embedder.embed_passage(hyde_doc)
+                    dense_vector = await self.embedder.embed_passage(hyde_doc)
             except Exception as e:
-                logger.warning("generate_hypothetical failed: %s", e)
+                logger.warning("generate_hypothetical failed: %r", e)
 
-        # 2. Поиск в документах пользователя
-        user_chunks = await self.retriever.retrieve(
-            collection_name=collection_name,
-            query=search_query,
-            document_id=document_id,
-            query_vector=hyde_vector,
-            gate_vector=query_vector,
-        )
-        for c in user_chunks:
-            c["source_type"] = "user"
-
-        # 3. Поиск в законодательстве (если включён)
-        law_chunks = []
-        law_search_failed = False
-        if law_search_enabled and self._law_client:
-            try:
-                raw = await self._law_client.search(
-                    question, query_vector, settings.law_corpus_top_k,
-                )
-                law_chunks = [{"source_type": "law", **r} for r in raw]
-            except Exception:
-                logger.warning("Law API недоступен", exc_info=True)
-                law_search_failed = True
-
-        # 4. Мерж результатов
-        all_chunks = self._merge_results(user_chunks, law_chunks)
-
-        # 5. Генерация ответа (generator обработает пустой контекст через CHAT_PROMPT)
-        result = await self.generator.generate(
-            question, all_chunks,
-            conversation_history=conversation_history,
-            user_state=user_state,
-        )
-
-        if law_search_failed:
-            result["answer"] += "\n\n<i>⚠️ Сервис законодательства временно недоступен.</i>"
-
-        return result
+        return search_query, query_vector, dense_vector
 
     async def query_stream(
         self,
@@ -312,33 +277,15 @@ class RAGPipeline:
         """
         collection_name = f"user_{user_telegram_id}"
 
-        # 1-4: Retrieval с HyDE и query rewriting (последовательно)
-        search_query = question
-        if settings.query_rewrite_enabled:
-            try:
-                rewritten = await self.generator.rewrite_query(question, conversation_history)
-                if rewritten and rewritten != question:
-                    search_query = rewritten
-                    logger.info("Query rewritten: '%s' -> '%s'", question[:60], search_query[:60])
-            except Exception as e:
-                logger.warning("rewrite_query failed: %s", e)
-
-        query_vector = await self.embedder.embed_query(question)
-        hyde_vector = query_vector
-        if settings.hyde_enabled:
-            try:
-                hyde_doc = await self.generator.generate_hypothetical(search_query)
-                if hyde_doc:
-                    logger.info("HyDE doc: '%s...'", hyde_doc[:80])
-                    hyde_vector = await self.embedder.embed_passage(hyde_doc)
-            except Exception as e:
-                logger.warning("generate_hypothetical failed: %s", e)
+        search_query, query_vector, dense_vector = await self._prepare_search(
+            question, conversation_history,
+        )
 
         user_chunks = await self.retriever.retrieve(
             collection_name=collection_name,
             query=search_query,
             document_id=document_id,
-            query_vector=hyde_vector,
+            query_vector=dense_vector,
             gate_vector=query_vector,
         )
         for c in user_chunks:
@@ -359,7 +306,6 @@ class RAGPipeline:
         all_chunks = self._merge_results(user_chunks, law_chunks)
 
         # Метаданные: sources + model (доступны до генерации)
-        from app.core.generator import ResponseGenerator
         sources = ResponseGenerator.extract_sources(all_chunks)
         yield {
             "type": "meta",

@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import logging
 import time
 from collections.abc import AsyncGenerator
@@ -20,8 +22,8 @@ _MAX_RETRIES = 3
 _RETRY_BACKOFF = (1.0, 3.0, 7.0)  # задержки между попытками
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503}
 
-
-import hashlib
+# OpenAI SDK требует непустой ключ даже там, где он не нужен (Ollama, vLLM)
+_PLACEHOLDER_API_KEY = "not-needed"
 
 
 class RoundRobinKeyManager:
@@ -42,29 +44,49 @@ class RoundRobinKeyManager:
 
 
 class ResponseCache:
-    """Simple in-memory cache for LLM responses (classifier, rewrite, HyDE)."""
+    """In-memory кэш ответов LLM для вспомогательных вызовов (классификатор, rewrite, HyDE).
+
+    Ключ — хэш от ПОЛНОГО содержимого запроса (роли, тексты, модель, температура):
+    одинаковый ключ получают только идентичные запросы, поэтому ответ не может
+    уйти к другому вопросу или другому пользователю.
+    """
 
     def __init__(self, max_size: int = 500):
         self._cache: dict[str, str] = {}
         self._max_size = max_size
 
-    def _key(self, messages: list[dict], model: str, temperature: float) -> str:
-        content = "|".join(m.get("content", "")[:200] for m in messages)
-        raw = f"{model}:{temperature}:{content}"
-        return hashlib.md5(raw.encode()).hexdigest()
+    @staticmethod
+    def is_cacheable(messages: list[dict[str, Any]]) -> bool:
+        """Кэшируются только чисто текстовые запросы (без картинок и прочего multimodal)."""
+        return all(isinstance(m.get("content"), str) for m in messages)
 
-    def get(self, messages: list[dict], model: str, temperature: float) -> str | None:
-        k = self._key(messages, model, temperature)
-        return self._cache.get(k)
+    @staticmethod
+    def _key(messages: list[dict[str, Any]], model: str, temperature: float) -> str:
+        payload = json.dumps(
+            {"model": model, "temperature": temperature, "messages": messages},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
-    def put(self, messages: list[dict], model: str, temperature: float, response: str) -> None:
+    def get(self, messages: list[dict[str, Any]], model: str, temperature: float) -> str | None:
+        if not self.is_cacheable(messages):
+            return None
+        return self._cache.get(self._key(messages, model, temperature))
+
+    def put(
+        self, messages: list[dict[str, Any]], model: str, temperature: float, response: str,
+    ) -> None:
+        if not self.is_cacheable(messages):
+            return
         if len(self._cache) >= self._max_size:
-            # Remove oldest 20%
-            keys_to_remove = list(self._cache.keys())[:self._max_size // 5]
-            for k in keys_to_remove:
+            # Удаляем самые старые 20% (dict сохраняет порядок вставки)
+            for k in list(self._cache.keys())[: self._max_size // 5]:
                 del self._cache[k]
-        k = self._key(messages, model, temperature)
-        self._cache[k] = response
+        self._cache[self._key(messages, model, temperature)] = response
+
+    def clear(self) -> None:
+        self._cache.clear()
 
 
 # Global cache instance
@@ -77,26 +99,29 @@ class LLMError(Exception):
 
 class OpenAICompatibleProvider:
     """
-    LLM-провайдер для OpenAI-совместимого API (Cerebras, Claude proxy и др.).
+    LLM-провайдер для OpenAI-совместимого API (OpenAI, OpenRouter, Groq, Ollama, vLLM...).
     Retry и таймауты.
     """
 
-    def __init__(self, base_url: str, model: str, api_key: str = "unused",
+    def __init__(self, base_url: str, model: str, api_key: str = "",
                  key_manager: RoundRobinKeyManager | None = None) -> None:
         self.model = model
         self.base_url = base_url
         self._key_manager = key_manager
-        self._api_key = api_key
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=httpx.Timeout(60.0, connect=10.0),
-        )
+        self._api_key = api_key or _PLACEHOLDER_API_KEY
+        self._client = self._make_client(self._api_key)
         if key_manager:
             logger.info("LLM provider: %s, model=%s, keys=%d (round-robin)",
                         base_url, model, key_manager.count)
         else:
             logger.info("LLM provider: %s, model=%s", base_url, model)
+
+    def _make_client(self, api_key: str) -> AsyncOpenAI:
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=self.base_url,
+            timeout=httpx.Timeout(settings.llm_timeout, connect=10.0),
+        )
 
     def _rotate_key(self) -> None:
         """Rotate to next API key if round-robin is enabled."""
@@ -104,11 +129,7 @@ class OpenAICompatibleProvider:
             next_key = self._key_manager.next_key()
             if next_key != self._api_key:
                 self._api_key = next_key
-                self._client = AsyncOpenAI(
-                    api_key=next_key,
-                    base_url=self.base_url,
-                    timeout=httpx.Timeout(60.0, connect=10.0),
-                )
+                self._client = self._make_client(next_key)
 
     async def generate(
         self,
@@ -116,13 +137,17 @@ class OpenAICompatibleProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
         model: str | None = None,
+        use_cache: bool = False,
     ) -> str:
-        """Генерация ответа через LLM с retry, кешированием и round-robin ключами."""
+        """Генерация ответа через LLM с retry и round-robin ключами.
+
+        use_cache=True — только для вспомогательных вызовов (классификатор, rewrite,
+        HyDE): повторный идентичный запрос вернёт сохранённый ответ.
+        """
         use_model = model or self.model
         use_temp = temperature if temperature is not None else settings.llm_temperature
 
-        # Cache check (only for non-streaming, deterministic calls like classifier)
-        if use_temp <= 0.1:
+        if use_cache:
             cached = _response_cache.get(messages, use_model, use_temp)
             if cached is not None:
                 logger.info("Cache hit for model=%s", use_model)
@@ -137,7 +162,7 @@ class OpenAICompatibleProvider:
                 response = await self._client.chat.completions.create(
                     model=use_model,
                     messages=messages,
-                    temperature=temperature if temperature is not None else settings.llm_temperature,
+                    temperature=use_temp,
                     max_tokens=max_tokens if max_tokens is not None else settings.llm_max_tokens,
                 )
 
@@ -146,9 +171,11 @@ class OpenAICompatibleProvider:
 
                 result = response.choices[0].message.content or ""
                 if not result.strip():
-                    logger.warning("LLM returned empty content, model=%s, finish_reason=%s", use_model, response.choices[0].finish_reason)
-                # Cache the response for low-temperature calls
-                if use_temp <= 0.1:
+                    logger.warning(
+                        "LLM returned empty content, model=%s, finish_reason=%s",
+                        use_model, response.choices[0].finish_reason,
+                    )
+                if use_cache:
                     _response_cache.put(messages, use_model, use_temp, result)
                 return result
 
@@ -335,22 +362,37 @@ _TRANSIENT_EXCEPTIONS = (APIConnectionError, APITimeoutError)
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503}
 
 
-def _is_transient(exc: Exception) -> bool:
+def _is_transient(exc: BaseException | None) -> bool:
     """Определить, является ли ошибка временной (стоит попробовать fallback)."""
     if isinstance(exc, _TRANSIENT_EXCEPTIONS):
         return True
-    if isinstance(exc, APIStatusError) and exc.status_code in _TRANSIENT_STATUS_CODES:
+    return isinstance(exc, APIStatusError) and exc.status_code in _TRANSIENT_STATUS_CODES
+
+
+def _should_fallback(error: LLMError) -> bool:
+    """Переключаться ли на fallback после ошибки primary.
+
+    Да — при временных сбоях (timeout, обрыв соединения, 429, 5xx) и при ошибках
+    без HTTP-причины (например, пустой ответ). Нет — при перманентных HTTP-ошибках
+    (400, 401, 403, 404): запрос или конфигурация неверны, fallback их не исправит.
+    """
+    cause = error.__cause__
+    if cause is None:
         return True
-    return False
+    return _is_transient(cause)
 
 
 class FallbackProvider:
     """
-    LLM-провайдер с авто-fallback: primary (Cerebras) → fallback (Claude proxy).
+    LLM-провайдер с авто-fallback: primary → fallback (оба OpenAI-совместимые).
 
     При transient-ошибках (timeout, connection error, 429, 5xx) на primary
     автоматически переключается на fallback с логированием.
-    Перманентные ошибки (401, 403, 404) пробрасываются сразу.
+    Перманентные ошибки (400, 401, 403, 404) пробрасываются сразу.
+
+    `model` — всегда модель primary: провайдер общий для всех запросов, и менять
+    атрибут на лету значило бы подписывать чужие ответы не той моделью.
+    Переключение на fallback видно в логах.
     """
 
     def __init__(
@@ -360,11 +402,14 @@ class FallbackProvider:
     ) -> None:
         self.primary = primary
         self.fallback = fallback
-        self.model = primary.model  # активная модель
         logger.info(
             "FallbackProvider: primary=%s (%s), fallback=%s (%s)",
             primary.base_url, primary.model, fallback.base_url, fallback.model,
         )
+
+    @property
+    def model(self) -> str:
+        return self.primary.model
 
     async def generate(
         self,
@@ -372,27 +417,25 @@ class FallbackProvider:
         temperature: float | None = None,
         max_tokens: int | None = None,
         model: str | None = None,
+        use_cache: bool = False,
     ) -> str:
         """Генерация с авто-fallback."""
         try:
-            result = await self.primary.generate(
-                messages, temperature, max_tokens, model,
+            return await self.primary.generate(
+                messages, temperature, max_tokens, model, use_cache=use_cache,
             )
-            self.model = self.primary.model
-            return result
         except LLMError as e:
-            if not _is_transient(e.__cause__) if e.__cause__ else False:
+            if not _should_fallback(e):
                 raise
             logger.warning(
                 "Primary LLM (%s) недоступен: %s — переключаюсь на fallback (%s)",
                 self.primary.model, e, self.fallback.model,
             )
 
-        result = await self.fallback.generate(
-            messages, temperature, max_tokens, model,
+        # Переопределение модели относится к primary; fallback работает своей моделью
+        return await self.fallback.generate(
+            messages, temperature, max_tokens, use_cache=use_cache,
         )
-        self.model = self.fallback.model
-        return result
 
     async def generate_stream(
         self,
@@ -401,34 +444,35 @@ class FallbackProvider:
         max_tokens: int | None = None,
         model: str | None = None,
     ) -> AsyncGenerator[str, None]:
-        """Стриминг с авто-fallback (fallback только на этапе подключения)."""
+        """Стриминг с авто-fallback.
+
+        Fallback возможен только ДО первого токена. Если primary оборвался после
+        того, как часть ответа уже отдана пользователю, ошибка пробрасывается:
+        иначе fallback дописал бы полный ответ после обрывка и текст задвоился.
+        """
+        started = False
         try:
-            stream = self.primary.generate_stream(
+            async for chunk in self.primary.generate_stream(
                 messages, temperature, max_tokens, model,
-            )
-            # Пробуем получить первый чанк чтобы убедиться что подключение ОК
-            first_chunk = await stream.__anext__()
-            self.model = self.primary.model
-            yield first_chunk
-            async for chunk in stream:
+            ):
+                started = True
                 yield chunk
-            return
-        except LLMError as e:
-            if not _is_transient(e.__cause__) if e.__cause__ else False:
-                raise
-            logger.warning(
-                "Primary LLM stream (%s) недоступен: %s — переключаюсь на fallback (%s)",
-                self.primary.model, e, self.fallback.model,
-            )
-        except StopAsyncIteration:
+            if started:
+                return
             # Primary вернул пустой стрим — тоже fallback
             logger.warning(
                 "Primary LLM stream (%s) пуст — переключаюсь на fallback (%s)",
                 self.primary.model, self.fallback.model,
             )
+        except LLMError as e:
+            if started or not _should_fallback(e):
+                raise
+            logger.warning(
+                "Primary LLM stream (%s) недоступен: %s — переключаюсь на fallback (%s)",
+                self.primary.model, e, self.fallback.model,
+            )
 
-        self.model = self.fallback.model
         async for chunk in self.fallback.generate_stream(
-            messages, temperature, max_tokens, model,
+            messages, temperature, max_tokens,
         ):
             yield chunk

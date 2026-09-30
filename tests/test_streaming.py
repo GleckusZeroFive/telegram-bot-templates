@@ -2,7 +2,6 @@
 Тесты стриминга: provider retry/ошибки, generator, pipeline, handler.
 """
 
-import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,7 +10,6 @@ import pytest
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from app.llm.provider import LLMError, OpenAICompatibleProvider
-
 
 # ── Хелперы ──────────────────────────────────────────────────
 
@@ -35,7 +33,7 @@ class MockStreamResponse:
         try:
             return next(self._chunks)
         except StopIteration:
-            raise StopAsyncIteration
+            raise StopAsyncIteration from None
 
 
 def _make_status_error(status_code: int, message: str = "error") -> APIStatusError:
@@ -139,31 +137,33 @@ async def test_stream_retry_on_502(provider):
 
 
 @pytest.mark.asyncio
-async def test_stream_fatal_404_no_retry(provider):
-    """404 — fatal, без retry, сразу LLMError."""
+async def test_stream_fatal_404_no_retry(provider, caplog):
+    """404 — fatal, без retry. Пользователь видит общее сообщение, причина — в логе."""
     provider._client.chat.completions.create = AsyncMock(
         side_effect=_make_status_error(404, "model not found")
     )
 
-    with pytest.raises(LLMError, match="не найдена"):
+    with pytest.raises(LLMError, match="временно недоступен"):
         async for _ in provider.generate_stream([{"role": "user", "content": "тест"}]):
             pass
 
     assert provider._client.chat.completions.create.call_count == 1
+    assert "не найдена" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_stream_fatal_401_no_retry(provider):
-    """401 — fatal, без retry, сразу LLMError."""
+async def test_stream_fatal_401_no_retry(provider, caplog):
+    """401 — fatal, без retry. Пользователь видит общее сообщение, причина — в логе."""
     provider._client.chat.completions.create = AsyncMock(
         side_effect=_make_status_error(401, "unauthorized")
     )
 
-    with pytest.raises(LLMError, match="авторизации"):
+    with pytest.raises(LLMError, match="временно недоступен"):
         async for _ in provider.generate_stream([{"role": "user", "content": "тест"}]):
             pass
 
     assert provider._client.chat.completions.create.call_count == 1
+    assert "авторизации" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -173,10 +173,12 @@ async def test_stream_timeout_all_retries(provider):
         side_effect=_make_timeout_error()
     )
 
-    with patch("app.llm.provider.asyncio.sleep", new_callable=AsyncMock):
-        with pytest.raises(LLMError, match="не отвечает"):
-            async for _ in provider.generate_stream([{"role": "user", "content": "тест"}]):
-                pass
+    with (
+        patch("app.llm.provider.asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(LLMError, match="не отвечает"),
+    ):
+        async for _ in provider.generate_stream([{"role": "user", "content": "тест"}]):
+            pass
 
     assert provider._client.chat.completions.create.call_count == 3
 
@@ -209,10 +211,12 @@ async def test_stream_connection_error_all_retries(provider):
         side_effect=_make_connection_error()
     )
 
-    with patch("app.llm.provider.asyncio.sleep", new_callable=AsyncMock):
-        with pytest.raises(LLMError, match="недоступен"):
-            async for _ in provider.generate_stream([{"role": "user", "content": "тест"}]):
-                pass
+    with (
+        patch("app.llm.provider.asyncio.sleep", new_callable=AsyncMock),
+        pytest.raises(LLMError, match="недоступен"),
+    ):
+        async for _ in provider.generate_stream([{"role": "user", "content": "тест"}]):
+            pass
 
     assert provider._client.chat.completions.create.call_count == 3
 
@@ -293,8 +297,10 @@ async def test_pipeline_meta_then_deltas():
     mock_generator = MagicMock()
     mock_generator.provider = MagicMock()
     mock_generator.provider.model = "test-model"
+    mock_generator.rewrite_query = AsyncMock(return_value="тест")
+    mock_generator.generate_hypothetical = AsyncMock(return_value="")
 
-    async def _mock_gen_stream(question, chunks, conversation_history=None):
+    async def _mock_gen_stream(question, chunks, conversation_history=None, user_state=None):
         yield "ответ"
         yield " на вопрос"
 

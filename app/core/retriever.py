@@ -24,8 +24,11 @@ class QdrantRetriever:
         self.embedder = embedder
         self.top_k = settings.retriever_top_k
         self.score_threshold = settings.retriever_score_threshold
-        # Кэш: коллекция → поддерживает hybrid search
-        self._hybrid_cache: dict[str, bool] = {}
+        # Коллекции, для которых подтверждена поддержка hybrid search.
+        # Кэшируется только положительный ответ: коллекции без sparse-векторов
+        # (ещё не созданные, legacy до /reset, недоступные из-за сбоя Qdrant)
+        # после загрузки документа или восстановления становятся гибридными.
+        self._hybrid_collections: set[str] = set()
 
     def _build_filter(self, document_id: str | None) -> Filter | None:
         if not document_id:
@@ -40,27 +43,25 @@ class QdrantRetriever:
         )
 
     def _collection_exists(self, collection_name: str) -> bool:
-        collections = [c.name for c in self.client.get_collections().collections]
-        return collection_name in collections
+        return self.client.collection_exists(collection_name)
 
     def _is_hybrid_collection(self, collection_name: str) -> bool:
         """Проверить, поддерживает ли коллекция sparse vectors (BM25)."""
-        if collection_name in self._hybrid_cache:
-            return self._hybrid_cache[collection_name]
+        if collection_name in self._hybrid_collections:
+            return True
 
         try:
             info = self.client.get_collection(collection_name)
-            sparse_config = info.config.params.sparse_vectors
-            is_hybrid = sparse_config is not None and "bm25" in sparse_config
         except Exception as e:
             err_msg = str(e).lower()
-            if "not found" in err_msg or "doesn't exist" in err_msg:
-                is_hybrid = False
-            else:
+            if "not found" not in err_msg and "doesn't exist" not in err_msg:
                 logger.warning("Qdrant ошибка при проверке коллекции %s: %s", collection_name, e)
-                is_hybrid = False
+            return False
 
-        self._hybrid_cache[collection_name] = is_hybrid
+        sparse_config = info.config.params.sparse_vectors
+        is_hybrid = sparse_config is not None and "bm25" in sparse_config
+        if is_hybrid:
+            self._hybrid_collections.add(collection_name)
         return is_hybrid
 
     def _hybrid_search_with_sparse(

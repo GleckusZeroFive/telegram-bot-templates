@@ -11,16 +11,31 @@ from app.llm.factory import get_llm_provider
 from app.presets import get_preset
 
 # ONNX classifier (local, fast, free)
-_ONNX_AVAILABLE = False
+_ONNX_IMPORTABLE = False
 try:
-    from app.core.onnx_classifier import classify_intent_onnx
-    _ONNX_AVAILABLE = True
+    from app.core.onnx_classifier import classify_intent_onnx, model_available
+    _ONNX_IMPORTABLE = True
 except ImportError:
     pass
 
 _ONNX_CONFIDENCE_THRESHOLD = 0.75  # below this, fallback to LLM
 
 logger = logging.getLogger(__name__)
+
+# None — ещё не проверяли; проверка один раз, чтобы не писать в лог на каждое сообщение
+_onnx_enabled: bool | None = None
+
+
+def _onnx_ready() -> bool:
+    global _onnx_enabled
+    if _onnx_enabled is None:
+        _onnx_enabled = _ONNX_IMPORTABLE and model_available()
+        if not _onnx_enabled:
+            logger.warning(
+                "ONNX intent classifier unavailable (no onnxruntime or model file) — "
+                "using LLM classifier. Download the model: python scripts/download_intent_model.py"
+            )
+    return _onnx_enabled
 
 Intent = Literal["rag", "chat", "followup"]
 
@@ -90,8 +105,11 @@ async def classify_intent(
         "chat"     — разговорный режим, без поиска
         "followup" — уточнение к предыдущему ответу бота
     """
+    if not settings.classifier_enabled:
+        return "rag"
+
     # --- ONNX classifier (primary) ---
-    if _ONNX_AVAILABLE:
+    if _onnx_ready():
         try:
             intent, confidence = classify_intent_onnx(question)
             if confidence >= _ONNX_CONFIDENCE_THRESHOLD:
@@ -144,6 +162,7 @@ async def classify_intent(
             temperature=settings.classifier_temperature,
             max_tokens=settings.classifier_max_tokens,
             model=settings.classifier_model,
+            use_cache=True,
         )
 
         logger.info("Классификатор raw: %r для вопроса: %.80s", raw, question)

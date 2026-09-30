@@ -3,8 +3,8 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from app.config import settings
-from app.llm.factory import get_llm_provider
 from app.core.calibrator import get_model_profile
+from app.llm.factory import get_llm_provider
 from app.presets import get_preset
 
 logger = logging.getLogger(__name__)
@@ -57,7 +57,7 @@ class ResponseGenerator:
     ) -> list[dict[str, Any]]:
         """Собрать messages для LLM: system + history + question."""
         preset = get_preset()
-        from app.bot.commands import format_commands_for_prompt, _get_commands_short
+        from app.bot.commands import _get_commands_short, format_commands_for_prompt
 
         profile = get_model_profile()
 
@@ -177,35 +177,6 @@ class ResponseGenerator:
                     sources.append(source)
         return sources
 
-    async def generate(
-        self,
-        question: str,
-        context_chunks: list[dict],
-        conversation_history: list[dict[str, str]] | None = None,
-        user_state: str | None = None,
-        mode: str = "rag",
-    ) -> dict:
-        """
-        Генерация ответа на основе контекста из чанков.
-
-        Returns:
-            {"answer": str, "sources": list[dict], "model": str}
-        """
-        messages = self._build_messages(
-            question, context_chunks, conversation_history,
-            user_state=user_state, mode=mode,
-        )
-        answer = await self.provider.generate(messages)
-        sources = self.extract_sources(context_chunks)
-
-        logger.info("Ответ сгенерирован: model=%s, sources=%d", self.provider.model, len(sources))
-        return {
-            "answer": answer,
-            "sources": sources,
-            "model": self.provider.model,
-        }
-
-
     async def generate_hypothetical(self, question: str) -> str:
         messages = [
             {
@@ -220,7 +191,7 @@ class ResponseGenerator:
             },
             {"role": "user", "content": question},
         ]
-        return await self.provider.generate(messages, max_tokens=200)
+        return await self.provider.generate(messages, max_tokens=200, use_cache=True)
 
     async def rewrite_query(
         self,
@@ -243,14 +214,14 @@ class ResponseGenerator:
 
         if history_text:
             prompt = (
-                f"\u0418\u0441\u0442\u043e\u0440\u0438\u044f \u0434\u0438\u0430\u043b\u043e\u0433\u0430:\n{history_text}\n\n"
-                f"\u041d\u043e\u0432\u044b\u0439 \u0432\u043e\u043f\u0440\u043e\u0441 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f: {question}\n\n"
+                f"История диалога:\n{history_text}\n\n"
+                f"Новый вопрос пользователя: {question}\n\n"
                 "Перепиши вопрос как самодостаточный поисковый запрос (без местоимений, "
                 "с полным контекстом). Верни ТОЛЬКО переформулированный запрос, без пояснений."
             )
         else:
             prompt = (
-                f"\u0412\u043e\u043f\u0440\u043e\u0441: {question}\n\n"
+                f"Вопрос: {question}\n\n"
                 "Перепиши как поисковый запрос для семантического поиска по документам. "
                 "Верни ТОЛЬКО запрос, без пояснений."
             )
@@ -259,7 +230,7 @@ class ResponseGenerator:
             {"role": "system", "content": "Ты — система переформулировки запросов.\n/no_think"},
             {"role": "user", "content": prompt},
         ]
-        rewritten = await self.provider.generate(messages, max_tokens=100)
+        rewritten = await self.provider.generate(messages, max_tokens=100, use_cache=True)
         return rewritten.strip() or question
 
     async def generate_stream(

@@ -10,19 +10,21 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _PAGE_PATTERN = re.compile(r"\[Страница (\d+)\]")
+# Регистронезависим только маркер главы. Глобальный IGNORECASE превращал ветку
+# КАПС-строк в «любая строка из букв», и заголовком считался обычный текст.
 _HEADER_PATTERN = re.compile(
     r"^(?:"
-    r"#{1,6}\s+.+|"                                                            # Markdown headers
-    r"(?:Глава|Раздел|Часть|Chapter|Section|Part)\s+[\dIVXLCDM]+[.:)]*\s*.*|"  # Явные маркеры глав
-    r"[А-ЯA-Z][А-ЯA-Z\s\d.]{3,80}$"                                            # КАПС-строки
+    r"#{1,6}\s+.+|"                                                               # Markdown headers
+    r"(?i:глава|раздел|часть|chapter|section|part)\s+[\dIVXLCDM]+[.:)]*\s*.*|"    # Явные маркеры глав
+    r"[А-ЯЁA-Z][А-ЯЁA-Z\s\d.]{3,80}$"                                             # КАПС-строки
     r")",
-    re.MULTILINE | re.IGNORECASE,
+    re.MULTILINE,
 )
 
 
 class _TextSegment:
     """Сегмент текста с метаданными о структуре документа."""
-    __slots__ = ("text", "page_number", "section_header")
+    __slots__ = ("page_number", "section_header", "text")
 
     def __init__(
         self,

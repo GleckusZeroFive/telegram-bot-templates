@@ -96,7 +96,10 @@ def test_header_detection_none() -> None:
 
 def test_section_header_in_metadata() -> None:
     """Заголовок раздела сохраняется в метаданных."""
-    text = "[Страница 1]\n# Введение\nТекст введения достаточно длинный для прохождения фильтра минимального размера чанка."
+    text = (
+        "[Страница 1]\n# Введение\n"
+        "Текст введения достаточно длинный для прохождения фильтра минимального размера чанка."
+    )
     chunker = AdvancedChunker()
     chunks = chunker.chunk(text)
     assert len(chunks) >= 1

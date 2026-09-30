@@ -5,7 +5,6 @@
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -17,8 +16,14 @@ Intent = Literal["rag", "chat", "followup"]
 LABELS: list[str] = ["rag", "chat", "followup"]
 
 _MODEL_DIR = Path(__file__).parent / "intent_model"
+MODEL_PATH = _MODEL_DIR / "model.onnx"
 _session = None
 _tokenizer = None
+
+
+def model_available() -> bool:
+    """Веса модели скачаны (scripts/download_intent_model.py)."""
+    return MODEL_PATH.exists()
 
 
 def _load():
@@ -31,7 +36,7 @@ def _load():
     import onnxruntime as ort
     from transformers import AutoTokenizer
 
-    model_path = _MODEL_DIR / "model.onnx"
+    model_path = MODEL_PATH
     if not model_path.exists():
         raise FileNotFoundError(f"ONNX model not found: {model_path}")
 

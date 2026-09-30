@@ -8,15 +8,17 @@ from app.core.sparse_encoder import (
     tokenize,
 )
 
-
 # === tokenize ===
 
 def test_tokenize_basic_russian():
+    """Русские словоформы приводятся к лемме (pymorphy3 — runtime-зависимость)."""
     tokens = tokenize("Машинное обучение работает отлично")
-    assert "машинное" in tokens
-    assert "обучение" in tokens
-    assert "работает" in tokens
-    assert "отлично" in tokens
+    assert tokens == ["машинный", "обучение", "работать", "отлично"]
+
+
+def test_tokenize_lemmatizes_word_forms_to_same_token():
+    """Разные падежи одного слова дают один токен — BM25 находит «комиссию» по «комиссии»."""
+    assert tokenize("комиссию") == tokenize("комиссии") == tokenize("комиссия")
 
 
 def test_tokenize_removes_russian_stop_words():
